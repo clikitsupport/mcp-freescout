@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0](https://github.com/clikitsupport/mcp-freescout/compare/v4.1.0...v4.2.0) (2026-10-23)
+
+
+### Features
+
+* `freescout_create_conversation` starts a new outgoing email conversation with a customer (needs `freescout:send` in hosted mode)
+* `freescout_get_attachments` skips likely email-signature images (small or repeated in most messages) when reading everything, and lists the skipped IDs
+
 ## [4.1.0](https://github.com/clikitsupport/mcp-freescout/compare/v4.0.0...v4.1.0) (2026-10-23)
 
 
