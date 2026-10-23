@@ -1,0 +1,20 @@
+{
+    "name": "MCP OAuth",
+    "alias": "mcpoauth",
+    "description": "OAuth 2.1 sign-in for the hosted mcp-freescout server, so AI apps such as Claude and Grok connect as the FreeScout user who approves them. Requires the API & Webhooks module.",
+    "version": "1.0.0",
+    "author": "ClikIT",
+    "requiredAppVersion": "1.8.154",
+    "license": "AGPL-3.0",
+    "keywords": [],
+    "active": 0,
+    "order": 0,
+    "providers": [
+        "Modules\\McpOAuth\\Providers\\McpOAuthServiceProvider"
+    ],
+    "aliases": {},
+    "files": [
+        "start.php"
+    ],
+    "requires": ["apiwebhooks"]
+}
