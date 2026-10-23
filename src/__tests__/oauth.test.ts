@@ -125,6 +125,7 @@ describe('scopeApiToPrincipal', () => {
         _embedded: { conversations: Object.values(conversations) },
       })),
       getMailboxes: vi.fn(async () => ({ _embedded: { mailboxes: [{ id: 2 }, { id: 9 }] } })),
+      createConversation: vi.fn(async () => ({ id: 1, number: 1 })),
     };
   }
 
@@ -144,6 +145,19 @@ describe('scopeApiToPrincipal', () => {
     await expect(scoped.getConversation('20')).rejects.toBeInstanceOf(MailboxAccessError);
     await expect(scoped.sendDraft('20', 5, 7)).rejects.toBeInstanceOf(MailboxAccessError);
     expect(api.sendDraft).not.toHaveBeenCalled();
+  });
+
+  it('only starts conversations from the user mailboxes', async () => {
+    const api = fakeApi();
+    const scoped = scopeApiToPrincipal(api as never, principal);
+    const input = { customerEmail: 'a@example.com', subject: 's', text: 't', userId: 7 };
+
+    await scoped.createConversation({ ...input, mailboxId: 2 });
+    expect(api.createConversation).toHaveBeenCalledTimes(1);
+    await expect(scoped.createConversation({ ...input, mailboxId: 9 })).rejects.toBeInstanceOf(
+      MailboxAccessError
+    );
+    expect(api.createConversation).toHaveBeenCalledTimes(1);
   });
 
   it('filters search results and mailboxes', async () => {

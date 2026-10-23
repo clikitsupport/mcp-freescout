@@ -13,6 +13,21 @@ interface RetryOptions {
   timeout?: number;
 }
 
+export interface NewConversationInput {
+  mailboxId: number;
+  customerEmail: string;
+  customerFirstName?: string;
+  customerLastName?: string;
+  subject: string;
+  /** Message text; Markdown is converted to HTML like replies. */
+  text: string;
+  userId: number;
+  cc?: string[];
+  bcc?: string[];
+  status?: 'active' | 'pending' | 'closed';
+  assignTo?: number;
+}
+
 export class FreeScoutAPI {
   private baseUrl: string;
   private apiKey: string;
@@ -429,6 +444,37 @@ export class FreeScoutAPI {
       `/conversations/${ticketId}/drafts/${draftId}?user=${userId}`,
       'DELETE'
     );
+  }
+
+  /**
+   * Start a new outgoing email conversation with a first message from a
+   * FreeScout user. FreeScout emails the customer, as when a user sends a
+   * new conversation from the UI.
+   */
+  async createConversation(input: NewConversationInput): Promise<FreeScoutConversation> {
+    const thread: Record<string, unknown> = {
+      type: 'message',
+      text: this.formatForFreeScoutEditor(input.text),
+      user: input.userId,
+    };
+    if (input.cc?.length) thread.cc = input.cc;
+    if (input.bcc?.length) thread.bcc = input.bcc;
+
+    const customer: Record<string, string> = { email: input.customerEmail };
+    if (input.customerFirstName) customer.firstName = input.customerFirstName;
+    if (input.customerLastName) customer.lastName = input.customerLastName;
+
+    const body: Record<string, unknown> = {
+      type: 'email',
+      mailboxId: input.mailboxId,
+      subject: input.subject,
+      customer,
+      threads: [thread],
+    };
+    if (input.status) body.status = input.status;
+    if (input.assignTo) body.assignTo = input.assignTo;
+
+    return this.request<FreeScoutConversation>('/conversations', 'POST', body);
   }
 
   async updateConversation(

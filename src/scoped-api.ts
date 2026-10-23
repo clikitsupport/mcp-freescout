@@ -6,6 +6,7 @@ import type { FreeScoutConversation } from './types.js';
 export type FreeScoutApiPort = Pick<
   FreeScoutAPI,
   | 'addThread'
+  | 'createConversation'
   | 'createDraftReply'
   | 'deleteDraft'
   | 'downloadAttachment'
@@ -82,6 +83,10 @@ export function scopeApiToPrincipal<T extends FreeScoutApiPort>(api: T, principa
     deleteDraft: async (...args: Parameters<FreeScoutAPI['deleteDraft']>) => {
       await assertTicket(args[0]);
       return api.deleteDraft(...args);
+    },
+    createConversation: async (...args: Parameters<FreeScoutAPI['createConversation']>) => {
+      assertMailboxFilter(args[0].mailboxId);
+      return api.createConversation(...args);
     },
     updateConversation: async (...args: Parameters<FreeScoutAPI['updateConversation']>) => {
       await assertTicket(args[0]);

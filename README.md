@@ -394,6 +394,36 @@ None
 - "What mailboxes are configured?"
 - "Get mailbox information"
 
+#### `freescout_get_attachments`
+
+Read the files on a ticket: attachments and screenshots pasted inline into messages. Images come back as viewable images, PDFs as text plus the file, and text files as text.
+
+When no `attachmentIds` are given, likely email-signature graphics are left out: images of 12 KB or less or no side over 250 px, and images repeated in three or more messages. An image in exactly two messages is read once. The result lists skipped IDs, which can be read by passing them as `attachmentIds`.
+
+**Parameters:**
+
+- `ticket`: Ticket ID, ticket number, or FreeScout URL
+- `attachmentIds` (optional): Read only these IDs, with no filtering
+- `limit` (optional, default 10, max 20): Maximum number of files to read
+
+#### `freescout_create_conversation`
+
+Start a new outgoing email conversation with a customer. FreeScout emails the customer immediately, so the tool tells the agent to get explicit approval first. In hosted mode it needs the `freescout:send` scope and only sends from mailboxes the signed-in user can access.
+
+**Parameters:**
+
+- `mailboxId`: Mailbox to send from
+- `customerEmail`: Recipient; an existing customer is matched by email, or a new one is created
+- `customerFirstName`, `customerLastName` (optional): Used when creating a new customer
+- `subject`, `text`: Email subject and body (Markdown is converted to HTML)
+- `cc`, `bcc` (optional): Extra recipients
+- `status` (optional): `active`, `pending` or `closed` after sending
+- `assignTo` (optional): User ID to assign the new ticket to
+
+**Natural Language Examples:**
+
+- "Email jane@example.com from the Support mailbox to let her know her refund was processed"
+
 ## Workflow Examples
 
 ### Basic Ticket Analysis

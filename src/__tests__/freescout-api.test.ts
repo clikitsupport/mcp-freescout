@@ -784,4 +784,42 @@ describe('FreeScoutAPI', () => {
       );
     });
   });
+
+  describe('createConversation', () => {
+    it('posts a new email conversation with a user message', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ id: 900, number: 900 }),
+      });
+
+      const result = await api.createConversation({
+        mailboxId: 2,
+        customerEmail: 'pat@example.com',
+        customerFirstName: 'Pat',
+        subject: 'Your account',
+        text: 'Hello **Pat**',
+        userId: 3,
+        cc: ['ops@example.com'],
+        status: 'pending',
+      });
+
+      expect(result).toEqual({ id: 900, number: 900 });
+      const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`${mockBaseUrl}/api/conversations`);
+      expect(init.method).toBe('POST');
+      const body = JSON.parse(init.body as string);
+      expect(body).toMatchObject({
+        type: 'email',
+        mailboxId: 2,
+        subject: 'Your account',
+        customer: { email: 'pat@example.com', firstName: 'Pat' },
+        status: 'pending',
+        threads: [{ type: 'message', user: 3, cc: ['ops@example.com'] }],
+      });
+      expect(body.threads[0].text).toContain('<strong>Pat</strong>');
+      expect(body.threads[0]).not.toHaveProperty('bcc');
+      expect(body).not.toHaveProperty('assignTo');
+    });
+  });
 });

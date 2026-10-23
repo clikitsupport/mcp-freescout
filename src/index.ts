@@ -664,6 +664,58 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
       }
     );
 
+  // Tool 13: Create Conversation
+  if (allows(SCOPE_SEND))
+    server.registerTool(
+      'freescout_create_conversation',
+      {
+        title: 'Start New Conversation',
+        description:
+          'Start a new outgoing email conversation with a customer from a FreeScout mailbox. This emails the customer immediately and cannot be undone, so show the user the recipient, subject and message and only call it after they explicitly approve sending. Use freescout_get_mailboxes for mailbox IDs. To reply on an existing ticket, use freescout_create_draft_reply instead.',
+        inputSchema: z.object({
+          mailboxId: z.number().describe('Mailbox to send from (from freescout_get_mailboxes)'),
+          customerEmail: z.string().email().describe('Customer email address to send to'),
+          customerFirstName: z
+            .string()
+            .optional()
+            .describe('Customer first name, used if this creates a new customer'),
+          customerLastName: z
+            .string()
+            .optional()
+            .describe('Customer last name, used if this creates a new customer'),
+          subject: z.string().min(1).describe('Email subject'),
+          text: z.string().min(1).describe('Message body; Markdown is converted to HTML'),
+          cc: z.array(z.string().email()).optional().describe('CC recipients'),
+          bcc: z.array(z.string().email()).optional().describe('BCC recipients'),
+          status: z
+            .enum(['active', 'pending', 'closed'])
+            .optional()
+            .describe('Ticket status after sending (FreeScout default when omitted)'),
+          assignTo: z.number().optional().describe('User ID to assign the new ticket to'),
+          userId: z.number().optional().describe('User ID sending the email (default: from env)'),
+        }),
+        annotations: { destructiveHint: true, openWorldHint: true },
+      },
+      async ({ userId, ...input }) => {
+        const conversation = await api.createConversation({
+          ...input,
+          userId: actingUserId(userId),
+        });
+
+        const output = {
+          success: true,
+          message: `Sent new conversation #${conversation.number} to ${input.customerEmail}: "${input.subject}"`,
+          ticketId: conversation.id,
+          ticketNumber: conversation.number,
+        };
+
+        return {
+          content: [{ type: 'text', text: output.message }],
+          structuredContent: output,
+        };
+      }
+    );
+
   // Tool 12: Delete Draft
   if (allows(SCOPE_WRITE))
     server.registerTool(

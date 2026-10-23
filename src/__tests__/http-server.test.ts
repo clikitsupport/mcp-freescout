@@ -135,5 +135,14 @@ describe('createHttpServer', () => {
     expect(text).toContain('"name":"freescout_list_drafts"');
     expect(text).toContain('"name":"freescout_create_draft_reply"');
     expect(text).not.toContain('"name":"freescout_send_draft"');
+    expect(text).not.toContain('"name":"freescout_create_conversation"');
+  });
+
+  it('offers sending tools only with the send scope', async () => {
+    const base = await start(['freescout:read', 'freescout:write', 'freescout:send']);
+
+    const text = await (await listTools(base, VALID_TOKEN)).text();
+    expect(text).toContain('"name":"freescout_send_draft"');
+    expect(text).toContain('"name":"freescout_create_conversation"');
   });
 });
