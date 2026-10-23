@@ -3,6 +3,7 @@ import {
   attachmentToContent,
   classifyAttachment,
   listConversationAttachments,
+  listInlineImages,
   type ConversationAttachment,
 } from '../attachments.js';
 
@@ -149,5 +150,84 @@ describe('attachmentToContent', () => {
     );
 
     expect((block as { text: string }).text).toContain('Skipped');
+  });
+});
+
+describe('listInlineImages', () => {
+  const thread = (body: string) => ({ id: 20, body }) as never;
+
+  it('reads FreeScout inline images from the body as relative URLs', () => {
+    const result = listInlineImages(
+      thread(
+        '<p>See:</p><img alt="x" src="https://support.example.com/storage/attachment/0/5/14/image.png?id=7509&amp;token=abc123">'
+      )
+    );
+    expect(result).toEqual([
+      {
+        id: 7509,
+        threadId: 20,
+        fileName: 'image.png',
+        mimeType: 'image/*',
+        size: 0,
+        fileUrl: '/storage/attachment/0/5/14/image.png?id=7509&token=abc123',
+        inline: true,
+      },
+    ]);
+  });
+
+  it('ignores images that are not FreeScout attachments', () => {
+    expect(
+      listInlineImages(
+        thread(
+          [
+            '<img src="https://evil.example.com/pixel.png">',
+            "<img src='http://127.0.0.1:8787/healthz?id=1&token=x'>",
+            '<img src="/storage/attachment/../../.env?id=3&token=x">',
+            '<img src="/storage/attachment/a.png?id=abc&token=x">',
+            '<img src="/storage/attachment/a.png?id=4">',
+            '<img src="cid:image001.png">',
+          ].join('')
+        )
+      )
+    ).toEqual([]);
+  });
+
+  it('points lookalike hosts back at FreeScout', () => {
+    const [image] = listInlineImages(
+      thread('<img src="https://evil.example.com/storage/attachment/a.png?id=5&token=t">')
+    );
+    expect(image.fileUrl).toBe('/storage/attachment/a.png?id=5&token=t');
+  });
+
+  it('adds inline images after attachments without duplicating them', () => {
+    const result = listConversationAttachments({
+      id: 1,
+      number: 1,
+      subject: 's',
+      status: 'active',
+      _embedded: {
+        threads: [
+          {
+            id: 10,
+            body: '<img src="/storage/attachment/a.png?id=71&token=t"><img src="/storage/attachment/b.png?id=80&token=t">',
+            _embedded: {
+              attachments: [
+                {
+                  id: 71,
+                  fileName: 'a.png',
+                  fileUrl: 'https://x/a',
+                  mimeType: 'image/png',
+                  size: 5,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    } as never);
+    expect(result.map((a) => [a.id, a.inline ?? false])).toEqual([
+      [71, false],
+      [80, true],
+    ]);
   });
 });
