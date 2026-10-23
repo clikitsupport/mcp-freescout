@@ -137,6 +137,25 @@ Or in development mode with auto-reload:
 npm run dev
 ```
 
+## Hosted HTTP Mode
+
+To run the server once on a host (for example next to FreeScout) and add it to Claude as a custom connector by URL, start it in HTTP mode:
+
+```bash
+FREESCOUT_MCP_TRANSPORT=http node dist/index.js
+```
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `FREESCOUT_MCP_TRANSPORT` | yes | `stdio` | Set to `http` (or pass `--http`) |
+| `FREESCOUT_MCP_HTTP_PATH` | yes | | Secret endpoint path, at least 24 characters, e.g. `/mcp/<random secret>` |
+| `FREESCOUT_MCP_HTTP_PORT` | no | `8787` | Port to listen on |
+| `FREESCOUT_MCP_HTTP_HOST` | no | `127.0.0.1` | Address to bind; keep it local and put a reverse proxy with HTTPS in front |
+
+`FREESCOUT_URL`, `FREESCOUT_API_KEY` and `FREESCOUT_DEFAULT_USER_ID` work as in stdio mode.
+
+MCP is served only at the secret path, using streamable HTTP; every other path returns 404, and `GET /healthz` returns `ok` for keep-alive checks. The path is the only credential, so treat the full URL like a password, and change it if it leaks.
+
 ## Available Tools
 
 ### Core Ticket Operations
