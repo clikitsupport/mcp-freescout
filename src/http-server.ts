@@ -1,29 +1,29 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
 import { createMcpHandler, type McpServerFactory } from '@modelcontextprotocol/server';
+import { bearerToken, type Principal, type TokenIntrospector } from './oauth.js';
 
 export const DEFAULT_HTTP_HOST = '127.0.0.1';
 export const DEFAULT_HTTP_PORT = 8787;
-export const MIN_HTTP_PATH_LENGTH = 24;
+export const DEFAULT_HTTP_PATH = '/mcp';
 export const MAX_HTTP_BODY_BYTES = 5 * 1024 * 1024;
 
 export interface HttpServerConfig {
   host: string;
   port: number;
-  /** Secret endpoint path, e.g. `/mcp/<long random string>`. The only path that serves MCP. */
+  /** Local path that serves MCP, e.g. `/mcp`. */
   path: string;
+  /** Public URL clients connect to, e.g. `https://freescout.example.com/mcp`. */
+  publicUrl: string;
 }
 
 /**
- * Reads the HTTP transport settings. The endpoint path doubles as the shared
- * secret, so it must be long enough not to be guessed.
+ * Reads the HTTP transport settings. The public URL is what clients add as
+ * the connector and what OAuth tokens are issued for.
  */
 export function loadHttpServerConfig(env: NodeJS.ProcessEnv = process.env): HttpServerConfig {
-  const path = env.FREESCOUT_MCP_HTTP_PATH ?? '';
-  if (!path.startsWith('/') || path.length < MIN_HTTP_PATH_LENGTH) {
-    throw new Error(
-      `FREESCOUT_MCP_HTTP_PATH must start with "/" and be at least ${MIN_HTTP_PATH_LENGTH} characters, e.g. /mcp/<random secret>`
-    );
+  const path = env.FREESCOUT_MCP_HTTP_PATH || DEFAULT_HTTP_PATH;
+  if (!path.startsWith('/')) {
+    throw new Error('FREESCOUT_MCP_HTTP_PATH must start with "/"');
   }
 
   const port = Number.parseInt(env.FREESCOUT_MCP_HTTP_PORT ?? String(DEFAULT_HTTP_PORT), 10);
@@ -31,14 +31,39 @@ export function loadHttpServerConfig(env: NodeJS.ProcessEnv = process.env): Http
     throw new Error('FREESCOUT_MCP_HTTP_PORT must be a port number between 1 and 65535');
   }
 
-  return { host: env.FREESCOUT_MCP_HTTP_HOST || DEFAULT_HTTP_HOST, port, path };
+  const publicUrl = env.FREESCOUT_MCP_PUBLIC_URL ?? '';
+  let parsed: URL;
+  try {
+    parsed = new URL(publicUrl);
+  } catch {
+    throw new Error(
+      'FREESCOUT_MCP_PUBLIC_URL must be the full public URL of the MCP endpoint, e.g. https://freescout.example.com/mcp'
+    );
+  }
+  if (
+    parsed.protocol !== 'https:' &&
+    parsed.hostname !== 'localhost' &&
+    parsed.hostname !== '127.0.0.1'
+  ) {
+    throw new Error('FREESCOUT_MCP_PUBLIC_URL must use https');
+  }
+
+  return {
+    host: env.FREESCOUT_MCP_HTTP_HOST || DEFAULT_HTTP_HOST,
+    port,
+    path,
+    publicUrl: publicUrl.replace(/\/+$/, ''),
+  };
 }
 
-/** Constant-time comparison so response timing does not leak the secret path. */
-export function isSecretPath(requestPath: string, secretPath: string): boolean {
-  const actual = Buffer.from(requestPath);
-  const expected = Buffer.from(secretPath);
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+/**
+ * RFC 9728 metadata URL for a resource: the well-known prefix inserted
+ * between the origin and the resource path.
+ */
+export function protectedResourceMetadataUrl(publicUrl: string): string {
+  const url = new URL(publicUrl);
+  const path = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '');
+  return `${url.origin}/.well-known/oauth-protected-resource${path}`;
 }
 
 class BodyTooLargeError extends Error {}
@@ -91,12 +116,34 @@ function sendText(res: ServerResponse, status: number, text: string): void {
   res.end(text);
 }
 
+function sendUnauthorized(res: ServerResponse, metadataUrl: string, invalidToken: boolean): void {
+  const params = [`resource_metadata="${metadataUrl}"`];
+  if (invalidToken) {
+    params.push(
+      'error="invalid_token"',
+      'error_description="The access token is invalid or expired"'
+    );
+  }
+  res.statusCode = 401;
+  res.setHeader('www-authenticate', `Bearer ${params.join(', ')}`);
+  res.setHeader('content-type', 'application/json');
+  res.end(JSON.stringify({ error: invalidToken ? 'invalid_token' : 'unauthorized' }));
+}
+
 /**
- * Serves MCP over streamable HTTP at the configured secret path only. Every
- * other path answers 404, and `/healthz` answers 200 for keep-alive checks.
+ * Serves MCP over streamable HTTP at the configured path. Every MCP request
+ * needs an OAuth access token; requests without a valid one get 401 with a
+ * `WWW-Authenticate` challenge pointing at the protected resource metadata,
+ * which is how clients discover where to sign in. `/healthz` answers 200 for
+ * keep-alive checks and every other path answers 404.
  */
-export function createHttpServer(factory: McpServerFactory, config: HttpServerConfig): Server {
+export function createHttpServer(
+  factory: McpServerFactory,
+  config: HttpServerConfig,
+  introspect: TokenIntrospector
+): Server {
   const handler = createMcpHandler(factory);
+  const metadataUrl = protectedResourceMetadataUrl(config.publicUrl);
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -106,14 +153,37 @@ export function createHttpServer(factory: McpServerFactory, config: HttpServerCo
       return;
     }
 
-    if (!isSecretPath(url.pathname, config.path)) {
+    if (url.pathname !== config.path && url.pathname !== `${config.path}/`) {
       sendText(res, 404, 'Not found');
       return;
     }
 
-    toWebRequest(req, url)
-      .then((request) => handler.fetch(request))
-      .then((response) => writeWebResponse(res, response))
+    const token = bearerToken(req.headers.authorization);
+    if (!token) {
+      sendUnauthorized(res, metadataUrl, false);
+      return;
+    }
+
+    introspect(token)
+      .then(async (principal: Principal | null) => {
+        if (!principal) {
+          sendUnauthorized(res, metadataUrl, true);
+          return;
+        }
+        const request = await toWebRequest(req, url);
+        const response = await handler.fetch(request, {
+          authInfo: {
+            token,
+            clientId: principal.clientId,
+            scopes: principal.scopes,
+            expiresAt: principal.expiresAt,
+            resource: new URL(config.publicUrl),
+            resourceMetadataUrl: metadataUrl,
+            extra: { principal },
+          },
+        });
+        await writeWebResponse(res, response);
+      })
       .catch((error: unknown) => {
         if (error instanceof BodyTooLargeError) {
           sendText(res, 413, 'Request body too large');

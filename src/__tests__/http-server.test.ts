@@ -4,42 +4,59 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createHttpServer,
   DEFAULT_HTTP_HOST,
+  DEFAULT_HTTP_PATH,
   DEFAULT_HTTP_PORT,
-  isSecretPath,
   loadHttpServerConfig,
+  protectedResourceMetadataUrl,
 } from '../http-server.js';
 import { buildServer, isHttpMode } from '../index.js';
+import type { Principal } from '../oauth.js';
 
-const SECRET_PATH = '/mcp/test-secret-0123456789abcdef';
+const PUBLIC_URL = 'https://freescout.example.com/mcp';
+const VALID_TOKEN = 'fsat_valid';
+
+const principal = (scopes: string[]): Principal => ({
+  userId: 7,
+  userName: 'Pat Agent',
+  clientId: 'mcp_client',
+  scopes,
+  mailboxIds: [2],
+  isAdmin: false,
+  expiresAt: Math.floor(Date.now() / 1000) + 3600,
+});
 
 describe('loadHttpServerConfig', () => {
-  it('uses localhost defaults with a valid secret path', () => {
-    expect(loadHttpServerConfig({ FREESCOUT_MCP_HTTP_PATH: SECRET_PATH })).toEqual({
+  it('uses localhost defaults and the public URL', () => {
+    expect(loadHttpServerConfig({ FREESCOUT_MCP_PUBLIC_URL: `${PUBLIC_URL}/` })).toEqual({
       host: DEFAULT_HTTP_HOST,
       port: DEFAULT_HTTP_PORT,
-      path: SECRET_PATH,
+      path: DEFAULT_HTTP_PATH,
+      publicUrl: PUBLIC_URL,
     });
   });
 
-  it('rejects a missing or short secret path', () => {
-    expect(() => loadHttpServerConfig({})).toThrow(/FREESCOUT_MCP_HTTP_PATH/);
-    expect(() => loadHttpServerConfig({ FREESCOUT_MCP_HTTP_PATH: '/mcp' })).toThrow(
-      /FREESCOUT_MCP_HTTP_PATH/
-    );
+  it('requires an https public URL', () => {
+    expect(() => loadHttpServerConfig({})).toThrow(/FREESCOUT_MCP_PUBLIC_URL/);
+    expect(() =>
+      loadHttpServerConfig({ FREESCOUT_MCP_PUBLIC_URL: 'http://freescout.example.com/mcp' })
+    ).toThrow(/https/);
   });
 
-  it('rejects an invalid port', () => {
+  it('rejects an invalid port or path', () => {
     expect(() =>
-      loadHttpServerConfig({ FREESCOUT_MCP_HTTP_PATH: SECRET_PATH, FREESCOUT_MCP_HTTP_PORT: '0' })
+      loadHttpServerConfig({ FREESCOUT_MCP_PUBLIC_URL: PUBLIC_URL, FREESCOUT_MCP_HTTP_PORT: '0' })
     ).toThrow(/FREESCOUT_MCP_HTTP_PORT/);
+    expect(() =>
+      loadHttpServerConfig({ FREESCOUT_MCP_PUBLIC_URL: PUBLIC_URL, FREESCOUT_MCP_HTTP_PATH: 'mcp' })
+    ).toThrow(/FREESCOUT_MCP_HTTP_PATH/);
   });
 });
 
-describe('isSecretPath', () => {
-  it('matches only the exact path', () => {
-    expect(isSecretPath(SECRET_PATH, SECRET_PATH)).toBe(true);
-    expect(isSecretPath(`${SECRET_PATH}x`, SECRET_PATH)).toBe(false);
-    expect(isSecretPath('/mcp/test-secret-0123456789abcdeX', SECRET_PATH)).toBe(false);
+describe('protectedResourceMetadataUrl', () => {
+  it('inserts the well-known prefix before the resource path', () => {
+    expect(protectedResourceMetadataUrl(PUBLIC_URL)).toBe(
+      'https://freescout.example.com/.well-known/oauth-protected-resource/mcp'
+    );
   });
 });
 
@@ -59,41 +76,64 @@ describe('createHttpServer', () => {
     server = undefined;
   });
 
-  async function start(): Promise<string> {
-    server = createHttpServer(() => buildServer({ api: {} as never }), {
-      host: '127.0.0.1',
-      port: 0,
-      path: SECRET_PATH,
-    });
+  async function start(scopes: string[]): Promise<string> {
+    server = createHttpServer(
+      (ctx) =>
+        buildServer({
+          api: {} as never,
+          principal: ctx.authInfo?.extra?.principal as Principal | undefined,
+        }),
+      { host: '127.0.0.1', port: 0, path: DEFAULT_HTTP_PATH, publicUrl: PUBLIC_URL },
+      async (token) => (token === VALID_TOKEN ? principal(scopes) : null)
+    );
     await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
     return `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
   }
 
-  it('answers health checks and hides every other path', async () => {
-    const base = await start();
-
-    const health = await fetch(`${base}/healthz`);
-    expect(health.status).toBe(200);
-
-    const wrong = await fetch(`${base}/mcp/guess`, { method: 'POST', body: '{}' });
-    expect(wrong.status).toBe(404);
-  });
-
-  it('lists tools over the secret path', async () => {
-    const base = await start();
-
-    const response = await fetch(`${base}${SECRET_PATH}`, {
+  const listTools = (base: string, token?: string) =>
+    fetch(`${base}/mcp`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         accept: 'application/json, text/event-stream',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
     });
 
+  it('answers health checks and 404s other paths', async () => {
+    const base = await start(['freescout:read']);
+
+    expect((await fetch(`${base}/healthz`)).status).toBe(200);
+    expect((await fetch(`${base}/other`, { method: 'POST', body: '{}' })).status).toBe(404);
+  });
+
+  it('challenges requests without a token', async () => {
+    const base = await start(['freescout:read']);
+
+    const response = await listTools(base);
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toBe(
+      'Bearer resource_metadata="https://freescout.example.com/.well-known/oauth-protected-resource/mcp"'
+    );
+  });
+
+  it('rejects an invalid token', async () => {
+    const base = await start(['freescout:read']);
+
+    const response = await listTools(base, 'fsat_wrong');
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toContain('error="invalid_token"');
+  });
+
+  it('lists only the tools the token scopes allow', async () => {
+    const base = await start(['freescout:read', 'freescout:write']);
+
+    const response = await listTools(base, VALID_TOKEN);
     expect(response.status).toBe(200);
     const text = await response.text();
-    expect(text).toContain('freescout_list_drafts');
-    expect(text).toContain('freescout_send_draft');
+    expect(text).toContain('"name":"freescout_list_drafts"');
+    expect(text).toContain('"name":"freescout_create_draft_reply"');
+    expect(text).not.toContain('"name":"freescout_send_draft"');
   });
 });
