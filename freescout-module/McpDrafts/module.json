@@ -1,0 +1,20 @@
+{
+    "name": "MCP Drafts",
+    "alias": "mcpdrafts",
+    "description": "Adds API endpoints to send or delete reply drafts, used by mcp-freescout. Requires the API & Webhooks module.",
+    "version": "1.0.0",
+    "author": "ClikIT",
+    "requiredAppVersion": "1.8.154",
+    "license": "AGPL-3.0",
+    "keywords": [],
+    "active": 0,
+    "order": 0,
+    "providers": [
+        "Modules\\McpDrafts\\Providers\\McpDraftsServiceProvider"
+    ],
+    "aliases": {},
+    "files": [
+        "start.php"
+    ],
+    "requires": ["apiwebhooks"]
+}

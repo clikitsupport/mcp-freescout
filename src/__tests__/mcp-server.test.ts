@@ -75,12 +75,91 @@ describe('buildServer', () => {
     vi.unstubAllEnvs();
   });
 
-  it('registers the eight tools without declared output schemas', () => {
+  it('registers the twelve tools without declared output schemas', () => {
     const server = buildServer({ api: createApi() as never });
     const tools = registeredTools(server);
 
-    expect(Object.keys(tools)).toHaveLength(8);
+    expect(Object.keys(tools)).toHaveLength(12);
     expect(Object.values(tools).every((tool) => tool.outputSchema === undefined)).toBe(true);
+  });
+
+  it('lists drafts newest first and sends or deletes them by ID', async () => {
+    const api = {
+      ...createApi(),
+      getConversation: vi.fn().mockResolvedValue({
+        ...conversation,
+        _embedded: {
+          threads: [
+            { id: 1, type: 'customer', state: 'published', body: 'Help' },
+            { id: 40, type: 'message', state: 'draft', body: '<p>First try</p>' },
+            { id: 41, type: 'message', state: 'draft', body: '<p>Second try</p>' },
+          ],
+        },
+      }),
+      sendDraft: vi.fn().mockResolvedValue({ id: 41 }),
+      deleteDraft: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('FreeScout API error: 409')),
+    };
+    const tools = registeredTools(buildServer({ api: api as never, defaultUserId: 7 }));
+
+    const listed = await execute(tools, 'freescout_list_drafts', { ticket: '123' });
+    const sent = await execute(tools, 'freescout_send_draft', {
+      ticket: '123',
+      draftId: 41,
+      status: 'pending',
+    });
+    const deleted = await execute(tools, 'freescout_delete_draft', {
+      ticket: '123',
+      draftIds: [40, 39],
+    });
+
+    expect(listed.structuredContent).toMatchObject({
+      drafts: [
+        { draftId: 41, preview: 'Second try' },
+        { draftId: 40, preview: 'First try' },
+      ],
+    });
+    expect(api.sendDraft).toHaveBeenCalledWith('123', 41, 7, 'pending');
+    expect(sent.structuredContent).toMatchObject({ success: true, draftId: 41 });
+    expect(deleted.structuredContent).toMatchObject({
+      success: false,
+      deleted: [40],
+      failed: [{ draftId: 39 }],
+    });
+    expect(deleted.isError).toBe(false);
+  });
+
+  it('downloads ticket attachments and returns readable content', async () => {
+    const api = {
+      ...createApi(),
+      getConversation: vi.fn().mockResolvedValue({
+        ...conversation,
+        _embedded: {
+          threads: [
+            {
+              id: 5,
+              _embedded: {
+                attachments: [
+                  { id: 71, fileName: 'log.txt', fileUrl: 'https://x/71', mimeType: 'text/plain' },
+                  { id: 72, fileName: 'gone.png', mimeType: 'image/png' },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+      downloadAttachment: vi.fn().mockResolvedValue(Buffer.from('Fatal error on line 12')),
+    };
+    const tools = registeredTools(buildServer({ api: api as never }));
+
+    const result = await execute(tools, 'freescout_get_attachments', { ticket: '123' });
+    const text = (result.content as { text?: string }[]).map((c) => c.text).join('\n');
+
+    expect(api.downloadAttachment).toHaveBeenCalledExactlyOnceWith('https://x/71');
+    expect(text).toContain('Fatal error on line 12');
+    expect(text).toContain('Attachment 72 (gone.png) could not be read');
   });
 
   it('preserves the eight tool behaviors and structured content where it is stable', async () => {
