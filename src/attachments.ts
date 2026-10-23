@@ -10,6 +10,8 @@ export interface ConversationAttachment {
   mimeType: string;
   size: number;
   fileUrl?: string;
+  /** Pasted into the message body rather than attached as a file. */
+  inline?: boolean;
 }
 
 export type AttachmentKind = 'image' | 'pdf' | 'text' | 'unsupported';
@@ -34,8 +36,63 @@ const IMAGE_EXTENSIONS = new Set([
 ]);
 const TEXT_EXTENSIONS = new Set(['txt', 'log', 'csv', 'json', 'xml', 'md', 'html', 'htm', 'ini']);
 
+const INLINE_IMAGE_PATH = '/storage/attachment/';
+const IMG_SRC = /<img\b[^>]*?\bsrc\s*=\s*(["'])(.*?)\1/gi;
+
+function decodeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&#0*38;/g, '&')
+    .replace(/&#x0*26;/gi, '&');
+}
+
 /**
- * Collect attachments from every thread. The FreeScout API nests them under
+ * Images pasted into a message body. FreeScout stores them as attachments but
+ * the API leaves them out of the attachment list; the body still links each
+ * one with a signed URL (`/storage/attachment/...?id=N&token=...`).
+ *
+ * Bodies come from customers, so only FreeScout attachment paths are used and
+ * the result is relative: it always downloads from FreeScout itself, whatever
+ * host the tag names.
+ */
+export function listInlineImages(thread: FreeScoutThread): ConversationAttachment[] {
+  const result: ConversationAttachment[] = [];
+  const body = typeof thread.body === 'string' ? thread.body : '';
+
+  for (const match of body.matchAll(IMG_SRC)) {
+    let url: URL;
+    try {
+      url = new URL(decodeHtmlAttribute(match[2]), 'https://freescout.invalid');
+    } catch {
+      continue;
+    }
+    const id = Number(url.searchParams.get('id'));
+    if (!url.pathname.startsWith(INLINE_IMAGE_PATH) || !Number.isSafeInteger(id) || id < 1) {
+      continue;
+    }
+    if (!url.searchParams.get('token') || url.pathname.includes('..')) {
+      continue;
+    }
+
+    const fileName = decodeURIComponent(url.pathname.split('/').pop() ?? '') || 'image';
+    result.push({
+      id,
+      threadId: thread.id,
+      fileName,
+      // Referenced by an <img> tag, so read it as an image whatever its name.
+      mimeType: 'image/*',
+      size: 0,
+      fileUrl: `${url.pathname}?${url.searchParams.toString()}`,
+      inline: true,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Collect attachments from every thread, followed by images pasted into the
+ * thread bodies. The FreeScout API nests attachments under
  * `_embedded.attachments` with camelCase keys; the flat snake_case shape is
  * still accepted for older responses.
  */
@@ -65,6 +122,16 @@ export function listConversationAttachments(
         size: a.size,
         fileUrl: a.url,
       });
+    }
+  }
+
+  const seen = new Set(result.map((a) => a.id));
+  for (const thread of threads) {
+    for (const image of listInlineImages(thread)) {
+      if (!seen.has(image.id)) {
+        seen.add(image.id);
+        result.push(image);
+      }
     }
   }
 
@@ -132,7 +199,7 @@ export async function attachmentToContent(
   attachment: ConversationAttachment,
   data: Buffer
 ): Promise<ContentBlock[]> {
-  const label = `Attachment ${attachment.id} (thread ${attachment.threadId}): ${attachment.fileName}`;
+  const label = `${attachment.inline ? 'Inline image' : 'Attachment'} ${attachment.id} (thread ${attachment.threadId}): ${attachment.fileName}`;
   const kind = classifyAttachment(attachment.mimeType, attachment.fileName);
 
   switch (kind) {

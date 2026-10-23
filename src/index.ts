@@ -472,7 +472,7 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
       {
         title: 'Get Ticket Attachments',
         description:
-          'Download and read the files attached to a FreeScout ticket. Images (PNG, JPEG, GIF, WebP, AVIF, HEIC) are returned as viewable images, PDFs as extracted text plus the raw PDF, and text files as text. Omit attachmentIds to read every attachment on the ticket (up to limit).',
+          'Download and read the files attached to a FreeScout ticket, including screenshots pasted inline into message bodies. Images (PNG, JPEG, GIF, WebP, AVIF, HEIC) are returned as viewable images, PDFs as extracted text plus the raw PDF, and text files as text. Omit attachmentIds to read every attachment and inline image on the ticket (up to limit).',
         inputSchema: z.object({
           ticket: z.string().describe('Ticket ID, ticket number, or FreeScout URL'),
           attachmentIds: z
