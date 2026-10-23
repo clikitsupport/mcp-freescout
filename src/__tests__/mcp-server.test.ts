@@ -75,12 +75,42 @@ describe('buildServer', () => {
     vi.unstubAllEnvs();
   });
 
-  it('registers the twelve tools without declared output schemas', () => {
+  it('registers the thirteen tools without declared output schemas', () => {
     const server = buildServer({ api: createApi() as never });
     const tools = registeredTools(server);
 
-    expect(Object.keys(tools)).toHaveLength(12);
+    expect(Object.keys(tools)).toHaveLength(13);
     expect(Object.values(tools).every((tool) => tool.outputSchema === undefined)).toBe(true);
+  });
+
+  it('starts a new conversation as the signed-in user', async () => {
+    const api = {
+      ...createApi(),
+      createConversation: vi.fn().mockResolvedValue({ id: 900, number: 1234 }),
+    };
+    const principal = {
+      userId: 7,
+      userName: 'Pat',
+      clientId: 'c',
+      scopes: ['freescout:read', 'freescout:write', 'freescout:send'],
+      mailboxIds: [2],
+      isAdmin: false,
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    };
+    const tools = registeredTools(buildServer({ api: api as never, principal }));
+
+    const result = await execute(tools, 'freescout_create_conversation', {
+      mailboxId: 2,
+      customerEmail: 'pat@example.com',
+      subject: 'Hello',
+      text: 'Hi there',
+      userId: 99,
+    });
+
+    expect(api.createConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ mailboxId: 2, customerEmail: 'pat@example.com', userId: 7 })
+    );
+    expect(JSON.stringify(result)).toContain('#1234');
   });
 
   it('lists drafts newest first and sends or deletes them by ID', async () => {
