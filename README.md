@@ -139,22 +139,37 @@ npm run dev
 
 ## Hosted HTTP Mode
 
-To run the server once on a host (for example next to FreeScout) and add it to Claude as a custom connector by URL, start it in HTTP mode:
+To run the server once on a host next to FreeScout and add it to Claude, Grok or another MCP client as a custom connector by URL, run it in HTTP mode behind OAuth sign-in.
+
+1. Install the `freescout-module/McpOAuth` module in FreeScout (copy it to `Modules/` and activate it under **Manage → Modules**). It adds OAuth discovery, dynamic client registration, sign-in with FreeScout accounts, a consent screen and a **Connected AI apps** page in the user menu. It requires the API & Webhooks module.
+2. Start the server:
 
 ```bash
-FREESCOUT_MCP_TRANSPORT=http node dist/index.js
+FREESCOUT_MCP_TRANSPORT=http \
+FREESCOUT_MCP_PUBLIC_URL=https://freescout.example.com/mcp \
+node dist/index.js
 ```
+
+3. Put a reverse proxy with HTTPS in front so `https://freescout.example.com/mcp` reaches the server and the `Authorization` header is passed through. `/.well-known/oauth-*` and `/oauth/*` are served by FreeScout itself.
+4. Add `https://freescout.example.com/mcp` as a custom connector. The client is sent to FreeScout to sign in and approve access.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `FREESCOUT_MCP_TRANSPORT` | yes | `stdio` | Set to `http` (or pass `--http`) |
-| `FREESCOUT_MCP_HTTP_PATH` | yes | | Secret endpoint path, at least 24 characters, e.g. `/mcp/<random secret>` |
+| `FREESCOUT_MCP_PUBLIC_URL` | yes | | Public HTTPS URL of the MCP endpoint; tokens are issued for it |
+| `FREESCOUT_MCP_HTTP_PATH` | no | `/mcp` | Local path that serves MCP |
 | `FREESCOUT_MCP_HTTP_PORT` | no | `8787` | Port to listen on |
-| `FREESCOUT_MCP_HTTP_HOST` | no | `127.0.0.1` | Address to bind; keep it local and put a reverse proxy with HTTPS in front |
+| `FREESCOUT_MCP_HTTP_HOST` | no | `127.0.0.1` | Address to bind; keep it local behind the proxy |
 
-`FREESCOUT_URL`, `FREESCOUT_API_KEY` and `FREESCOUT_DEFAULT_USER_ID` work as in stdio mode.
+`FREESCOUT_URL` and `FREESCOUT_API_KEY` work as in stdio mode; the API key is also used to check access tokens with FreeScout.
 
-MCP is served only at the secret path, using streamable HTTP; every other path returns 404, and `GET /healthz` returns `ok` for keep-alive checks. The path is the only credential, so treat the full URL like a password, and change it if it leaks.
+Each connection acts as the FreeScout user who approved it:
+
+- **Scopes** set which tools the connection sees: `freescout:read` (always granted), `freescout:write` (notes, drafts, status and assignment; on by default) and `freescout:send` (send drafts to customers; opt-in on the consent screen).
+- **Attribution:** every note, draft and update is recorded as that user, whatever `userId` a tool call names.
+- **Mailboxes:** tickets, searches and mailbox lists are limited to the mailboxes that user can view.
+
+Access tokens last an hour and refresh for 30 days with rotation. Revoke a connection from **Connected AI apps**; the server notices within a minute. Requests without a valid token get `401` with a `WWW-Authenticate` challenge pointing at `/.well-known/oauth-protected-resource/mcp`. `GET /healthz` returns `ok` for keep-alive checks.
 
 ## Available Tools
 

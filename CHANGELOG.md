@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0](https://github.com/clikitsupport/mcp-freescout/compare/v3.3.0...v4.0.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* hosted HTTP mode requires OAuth sign-in: `FREESCOUT_MCP_PUBLIC_URL` is required, `FREESCOUT_MCP_HTTP_PATH` defaults to `/mcp` and is no longer a secret, and every request needs an access token from the McpOAuth FreeScout module
+
+### Features
+
+* OAuth 2.1 sign-in for hosted mode through the new McpOAuth FreeScout module: discovery, dynamic client registration, PKCE, refresh token rotation, revocation, a consent screen with opt-in sending, and a Connected AI apps page
+* each connection acts as the FreeScout user who approved it: tools are limited to the granted scopes, actions are attributed to that user, and tickets are limited to the user's mailboxes
+* PHP forwarder for hosts without mod_proxy_http (`deploy/php-forwarder`)
+
 ## [3.3.0](https://github.com/clikitsupport/mcp-freescout/compare/v3.2.0...v3.3.0) (2026-10-23)
 
 
