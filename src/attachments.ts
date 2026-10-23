@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { ContentBlock } from '@modelcontextprotocol/server';
 import sharp from 'sharp';
 import { extractText, getDocumentProxy } from 'unpdf';
@@ -153,6 +154,73 @@ export function classifyAttachment(mimeType: string, fileName: string): Attachme
     return 'text';
   }
   return 'unsupported';
+}
+
+export interface ImageProbe {
+  /** SHA-256 of the file bytes, to spot the same image in several messages. */
+  hash: string;
+  bytes: number;
+  width: number;
+  height: number;
+}
+
+/** Reads what the signature filter needs without converting the image. */
+export async function probeImage(data: Buffer): Promise<ImageProbe> {
+  const metadata = await sharp(data, { animated: false }).metadata();
+  return {
+    hash: createHash('sha256').update(data).digest('hex'),
+    bytes: data.length,
+    width: metadata.width ?? 0,
+    height: metadata.height ?? 0,
+  };
+}
+
+// Social icons, logos and badges in email signatures are small...
+export const SIGNATURE_MAX_BYTES = 12 * 1024;
+export const SIGNATURE_MAX_EDGE = 250;
+// ...or repeat in every message from the same sender.
+export const SIGNATURE_MIN_REPEATS = 3;
+
+export type SkipReason = 'small' | 'repeated' | 'duplicate';
+
+export interface ProbedImage {
+  attachment: ConversationAttachment;
+  probe: ImageProbe;
+}
+
+/**
+ * Decides which images are likely email-signature graphics rather than
+ * screenshots. Small images are skipped; an image in at least
+ * SIGNATURE_MIN_REPEATS different messages is skipped everywhere; any other
+ * image that appears more than once is read once (the earliest copy), so a
+ * screenshot quoted in a reply is still read.
+ */
+export function findSignatureImages(images: ProbedImage[]): Map<number, SkipReason> {
+  const skipped = new Map<number, SkipReason>();
+  const byHash = new Map<string, ProbedImage[]>();
+
+  for (const image of images) {
+    const { bytes, width, height, hash } = image.probe;
+    if (bytes <= SIGNATURE_MAX_BYTES || Math.max(width, height) <= SIGNATURE_MAX_EDGE) {
+      skipped.set(image.attachment.id, 'small');
+      continue;
+    }
+    byHash.set(hash, [...(byHash.get(hash) ?? []), image]);
+  }
+
+  for (const copies of byHash.values()) {
+    const threads = new Set(copies.map((copy) => copy.attachment.threadId));
+    if (threads.size >= SIGNATURE_MIN_REPEATS) {
+      copies.forEach((copy) => skipped.set(copy.attachment.id, 'repeated'));
+      continue;
+    }
+    const earliestFirst = [...copies].sort(
+      (a, b) => a.attachment.threadId - b.attachment.threadId || a.attachment.id - b.attachment.id
+    );
+    earliestFirst.slice(1).forEach((copy) => skipped.set(copy.attachment.id, 'duplicate'));
+  }
+
+  return skipped;
 }
 
 /**

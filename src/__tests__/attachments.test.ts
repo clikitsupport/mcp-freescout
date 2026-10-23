@@ -4,6 +4,7 @@ import {
   classifyAttachment,
   listConversationAttachments,
   listInlineImages,
+  findSignatureImages,
   type ConversationAttachment,
 } from '../attachments.js';
 
@@ -229,5 +230,47 @@ describe('listInlineImages', () => {
       [71, false],
       [80, true],
     ]);
+  });
+});
+
+describe('findSignatureImages', () => {
+  let nextId = 1;
+  const image = (threadId: number, hash: string, bytes: number, width: number, height: number) => ({
+    attachment: {
+      id: nextId++,
+      threadId,
+      fileName: 'image.png',
+      mimeType: 'image/png',
+      size: bytes,
+    },
+    probe: { hash, bytes, width, height },
+  });
+
+  it('skips small images', () => {
+    const icon = image(1, 'icon', 700, 37, 37);
+    const logo = image(1, 'logo', 2_700, 150, 48);
+    const narrow = image(1, 'narrow', 40_000, 240, 240);
+    const screenshot = image(1, 'shot', 200_000, 1206, 2622);
+    const skipped = findSignatureImages([icon, logo, narrow, screenshot]);
+    expect(skipped.get(icon.attachment.id)).toBe('small');
+    expect(skipped.get(logo.attachment.id)).toBe('small');
+    expect(skipped.get(narrow.attachment.id)).toBe('small');
+    expect(skipped.has(screenshot.attachment.id)).toBe(false);
+  });
+
+  it('skips large images repeated in three or more messages', () => {
+    const banners = [1, 2, 3, 4].map((thread) => image(thread, 'banner', 199_000, 3215, 853));
+    const skipped = findSignatureImages(banners);
+    banners.forEach((b) => expect(skipped.get(b.attachment.id)).toBe('repeated'));
+  });
+
+  it('reads the earliest copy of an image repeated in two messages', () => {
+    const later = image(9, 'quoted', 300_000, 1200, 800);
+    const earlier = image(5, 'quoted', 300_000, 1200, 800);
+    const sameThreadCopy = image(5, 'quoted', 300_000, 1200, 800);
+    const skipped = findSignatureImages([later, earlier, sameThreadCopy]);
+    expect(skipped.has(earlier.attachment.id)).toBe(false);
+    expect(skipped.get(later.attachment.id)).toBe('duplicate');
+    expect(skipped.get(sameThreadCopy.attachment.id)).toBe('duplicate');
   });
 });

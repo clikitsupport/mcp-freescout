@@ -7,7 +7,31 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { z } from 'zod';
 import type { ContentBlock } from '@modelcontextprotocol/server';
-import { attachmentToContent, listConversationAttachments } from './attachments.js';
+import {
+  attachmentToContent,
+  classifyAttachment,
+  findSignatureImages,
+  listConversationAttachments,
+  probeImage,
+  type ConversationAttachment,
+  type ProbedImage,
+  type SkipReason,
+} from './attachments.js';
+
+/** How many images get checked for email-signature graphics per call. */
+const MAX_SIGNATURE_SCAN = 40;
+
+function describeSkipped(skipped: Map<number, SkipReason>): string {
+  const counts = { small: 0, repeated: 0, duplicate: 0 };
+  skipped.forEach((reason) => counts[reason]++);
+  return [
+    counts.small && `${counts.small} small`,
+    counts.repeated && `${counts.repeated} repeated in most messages`,
+    counts.duplicate && `${counts.duplicate} duplicate copies`,
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
 import { resolveDraftReplyRecipients, shouldInheritDraftRecipients } from './draft-recipients.js';
 import { FreeScoutAPI } from './freescout-api.js';
 import { createHttpServer, loadHttpServerConfig } from './http-server.js';
@@ -472,7 +496,7 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
       {
         title: 'Get Ticket Attachments',
         description:
-          'Download and read the files attached to a FreeScout ticket, including screenshots pasted inline into message bodies. Images (PNG, JPEG, GIF, WebP, AVIF, HEIC) are returned as viewable images, PDFs as extracted text plus the raw PDF, and text files as text. Omit attachmentIds to read every attachment and inline image on the ticket (up to limit).',
+          'Download and read the files attached to a FreeScout ticket, including screenshots pasted inline into message bodies. Images (PNG, JPEG, GIF, WebP, AVIF, HEIC) are returned as viewable images, PDFs as extracted text plus the raw PDF, and text files as text. Omit attachmentIds to read every attachment and inline image on the ticket (up to limit), leaving out likely email-signature graphics (small images and logos repeated in most messages); the result lists their IDs so they can still be read by passing attachmentIds.',
         inputSchema: z.object({
           ticket: z.string().describe('Ticket ID, ticket number, or FreeScout URL'),
           attachmentIds: z
@@ -492,8 +516,43 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
         const ticketId = api.parseTicketInput(ticket);
         const conversation = await api.getConversation(ticketId, true);
         const all = listConversationAttachments(conversation);
-        const wanted = attachmentIds ? all.filter((a) => attachmentIds.includes(a.id)) : all;
+        const downloads = new Map<number, Buffer>();
+        const download = async (attachment: ConversationAttachment): Promise<Buffer> => {
+          const cached = downloads.get(attachment.id);
+          if (cached) return cached;
+          if (!attachment.fileUrl) {
+            throw new Error('FreeScout did not return a download URL');
+          }
+          const data = await api.downloadAttachment(attachment.fileUrl);
+          downloads.set(attachment.id, data);
+          return data;
+        };
+
+        // Reading everything: leave out likely email-signature graphics.
+        // Naming attachmentIds reads exactly those, signatures included.
+        let skipped = new Map<number, SkipReason>();
+        if (!attachmentIds) {
+          const images = all
+            .filter((a) => classifyAttachment(a.mimeType, a.fileName) === 'image')
+            .slice(0, MAX_SIGNATURE_SCAN);
+          const probed: ProbedImage[] = [];
+          for (const attachment of images) {
+            try {
+              probed.push({ attachment, probe: await probeImage(await download(attachment)) });
+            } catch {
+              // Unreadable here; it is reported when it is read below.
+            }
+          }
+          skipped = findSignatureImages(probed);
+        }
+
+        const wanted = attachmentIds
+          ? all.filter((a) => attachmentIds.includes(a.id))
+          : all.filter((a) => !skipped.has(a.id));
         const selected = wanted.slice(0, limit ?? 10);
+        const skippedNote = skipped.size
+          ? ` Skipped ${skipped.size} likely email-signature image(s) (${describeSkipped(skipped)}): ${[...skipped.keys()].join(', ')}. Pass their IDs as attachmentIds to read them anyway.`
+          : '';
 
         if (selected.length === 0) {
           return {
@@ -502,7 +561,7 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
                 type: 'text',
                 text: attachmentIds
                   ? `No matching attachments on ticket #${ticketId}. Available IDs: ${all.map((a) => a.id).join(', ') || 'none'}`
-                  : `Ticket #${ticketId} has no attachments.`,
+                  : `Ticket #${ticketId} has no attachments to read.${skippedNote}`,
               },
             ],
           };
@@ -511,17 +570,13 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
         const content: ContentBlock[] = [
           {
             type: 'text',
-            text: `Ticket #${ticketId}: reading ${selected.length} of ${all.length} attachment(s).`,
+            text: `Ticket #${ticketId}: reading ${selected.length} of ${all.length} attachment(s).${skippedNote}`,
           },
         ];
 
         for (const attachment of selected) {
           try {
-            if (!attachment.fileUrl) {
-              throw new Error('FreeScout did not return a download URL');
-            }
-            const data = await api.downloadAttachment(attachment.fileUrl);
-            content.push(...(await attachmentToContent(attachment, data)));
+            content.push(...(await attachmentToContent(attachment, await download(attachment))));
           } catch (error) {
             content.push({
               type: 'text',
