@@ -1,0 +1,65 @@
+# Release on tag - Clikit fork
+#
+# How it works:
+# 1. Work happens on branches, merged into the default branch via PR.
+# 2. Pushing a tag like v3.1.1 (or creating a GitHub Release, which creates the tag)
+#    builds and tests that exact commit.
+# 3. The built package (npm pack tarball) is attached to the GitHub Release as
+#    mcp-freescout.tgz, so clients always resolve the newest release with:
+#      npx -y https://github.com/clikitsupport/mcp-freescout/releases/latest/download/mcp-freescout.tgz
+#
+# No npm account or registry token needed: GITHUB_TOKEN is enough to upload the asset.
+
+name: Release on tag
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm test
+
+      # Fail early if the tag and package.json disagree (e.g. tag v3.2.0, package 3.1.0)
+      - name: Check tag matches package version
+        run: |
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "$pkg" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $pkg"
+            exit 1
+          fi
+
+      - name: Pack
+        run: |
+          npm pack
+          mv ./*.tgz mcp-freescout.tgz
+
+      # Creates the release if only a tag was pushed; uploads to it if the
+      # release was created in the GitHub UI.
+      - name: Publish release asset
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" mcp-freescout.tgz --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" mcp-freescout.tgz --generate-notes --verify-tag
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
