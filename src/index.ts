@@ -2,6 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio, type ServeStdioOptions } from '@modelcontextprotocol/server/stdio';
 import { realpathSync } from 'node:fs';
+import type { Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { z } from 'zod';
@@ -9,6 +10,7 @@ import type { ContentBlock } from '@modelcontextprotocol/server';
 import { attachmentToContent, listConversationAttachments } from './attachments.js';
 import { resolveDraftReplyRecipients, shouldInheritDraftRecipients } from './draft-recipients.js';
 import { FreeScoutAPI } from './freescout-api.js';
+import { createHttpServer, loadHttpServerConfig } from './http-server.js';
 import { installStdioLifecycle, type StdioLifecycle } from './stdio-lifecycle.js';
 import { TicketAnalyzer } from './ticket-analyzer.js';
 import { SearchFiltersSchema, type FreeScoutRecipients } from './types.js';
@@ -661,7 +663,48 @@ export function startStdioServer(options: Omit<ServeStdioOptions, 'onerror'> = {
   });
 }
 
+/**
+ * Serves MCP over streamable HTTP for hosted use. Each request gets a fresh
+ * server from `buildServer`, the same factory the stdio entry uses.
+ */
+export function startHttpServer(): Promise<Server> {
+  loadRuntimeConfiguration();
+  const config = loadHttpServerConfig();
+  const server = createHttpServer(() => buildServer(), config);
+
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => {
+      server.close(() => process.exit(0));
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(config.port, config.host, () => {
+      console.error(
+        `FreeScout MCP Server v${packageJson.version} listening on http://${config.host}:${config.port}`
+      );
+      resolve(server);
+    });
+  });
+}
+
+export function isHttpMode(argv: string[] = process.argv, env = process.env): boolean {
+  return env.FREESCOUT_MCP_TRANSPORT === 'http' || argv.includes('--http');
+}
+
 function main(): void {
+  if (isHttpMode()) {
+    startHttpServer().catch((error: unknown) => {
+      console.error(
+        'FreeScout MCP server startup error:',
+        error instanceof Error ? error.message : String(error)
+      );
+      process.exitCode = 1;
+    });
+    return;
+  }
+
   try {
     startStdioServer();
     console.error(`FreeScout MCP Server v${packageJson.version} running...`);
