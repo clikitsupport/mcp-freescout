@@ -403,6 +403,34 @@ export class FreeScoutAPI {
     return this.addThread(ticketId, 'message', text, userId, 'draft', recipients);
   }
 
+  /**
+   * Send an existing reply draft. Requires the McpDrafts FreeScout module.
+   */
+  async sendDraft(
+    ticketId: string,
+    draftId: number,
+    userId: number,
+    status?: 'active' | 'pending' | 'closed'
+  ): Promise<FreeScoutThread> {
+    const body: { user: number; status?: string } = { user: userId };
+    if (status) body.status = status;
+    return this.request<FreeScoutThread>(
+      `/conversations/${ticketId}/drafts/${draftId}/send`,
+      'POST',
+      body
+    );
+  }
+
+  /**
+   * Delete a reply draft. Requires the McpDrafts FreeScout module.
+   */
+  async deleteDraft(ticketId: string, draftId: number, userId: number): Promise<void> {
+    await this.request<unknown>(
+      `/conversations/${ticketId}/drafts/${draftId}?user=${userId}`,
+      'DELETE'
+    );
+  }
+
   async updateConversation(
     ticketId: string,
     updates: {
@@ -547,6 +575,60 @@ export class FreeScoutAPI {
     return this.request<FreeScoutApiResponse<FreeScoutConversation>>(
       `/conversations?${params.toString()}`
     );
+  }
+
+  /**
+   * Download an attachment's bytes from its `fileUrl`. FreeScout attachment
+   * URLs carry their own access token; the API key is only sent when the URL
+   * is on the configured FreeScout origin.
+   */
+  async downloadAttachment(fileUrl: string, maxBytes: number = 25 * 1024 * 1024): Promise<Buffer> {
+    const target = new URL(fileUrl, this.baseUrl);
+    if (target.protocol !== 'https:' && target.protocol !== 'http:') {
+      throw new Error(`Unsupported attachment URL protocol: ${target.protocol}`);
+    }
+
+    const headers: Record<string, string> = {};
+    if (target.origin === new URL(this.baseUrl).origin) {
+      headers['X-FreeScout-API-Key'] = this.apiKey;
+    }
+
+    return this.retryWithBackoff(async () => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.retryOptions.timeout);
+
+      try {
+        const response = await fetch(target, { headers, signal: controller.signal });
+
+        if (!response.ok) {
+          throw new Error(`FreeScout attachment download failed (${response.status})`);
+        }
+
+        const declared = Number(response.headers.get('content-length') ?? 0);
+        if (declared > maxBytes) {
+          throw new Error(`Attachment is ${declared} bytes, over the ${maxBytes} byte limit`);
+        }
+
+        const data = Buffer.from(await response.arrayBuffer());
+        if (data.length > maxBytes) {
+          throw new Error(`Attachment is ${data.length} bytes, over the ${maxBytes} byte limit`);
+        }
+
+        return data;
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          throw new Error(
+            `FreeScout attachment download timeout after ${this.retryOptions.timeout}ms`,
+            {
+              cause: error,
+            }
+          );
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    });
   }
 
   async getMailboxes(): Promise<unknown> {

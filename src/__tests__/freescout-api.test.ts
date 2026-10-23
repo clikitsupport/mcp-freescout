@@ -718,4 +718,70 @@ describe('FreeScoutAPI', () => {
       expect(callBody).toContain('<em>italicized text</em>');
     });
   });
+
+  describe('drafts and attachments', () => {
+    it('sends a draft through the McpDrafts endpoint', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ id: 88 }) });
+
+      await api.sendDraft('123', 88, 7, 'pending');
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://test.freescout.com/api/conversations/123/drafts/88/send',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ user: 7, status: 'pending' }),
+        })
+      );
+    });
+
+    it('deletes a draft and accepts 204 No Content', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, status: 204 });
+
+      await expect(api.deleteDraft('123', 88, 7)).resolves.toBeUndefined();
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://test.freescout.com/api/conversations/123/drafts/88?user=7',
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+
+    it('surfaces a 409 when the thread was already sent', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        text: async () => '{"message":"Thread is not a draft"}',
+      });
+
+      await expect(api.deleteDraft('123', 88, 7)).rejects.toThrow('409');
+    });
+
+    it('sends the API key only to the FreeScout origin when downloading', async () => {
+      const ok = () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      });
+      mockFetch.mockResolvedValueOnce(ok()).mockResolvedValueOnce(ok());
+
+      const data = await api.downloadAttachment('https://test.freescout.com/storage/a.png');
+      await api.downloadAttachment('https://cdn.example.com/a.png');
+
+      expect([...data]).toEqual([1, 2, 3]);
+      expect(mockFetch.mock.calls[0][1].headers).toEqual({ 'X-FreeScout-API-Key': mockApiKey });
+      expect(mockFetch.mock.calls[1][1].headers).toEqual({});
+    });
+
+    it('rejects attachments over the size limit', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-length': '999' }),
+        arrayBuffer: async () => new ArrayBuffer(0),
+      });
+
+      await expect(api.downloadAttachment('https://test.freescout.com/a', 10)).rejects.toThrow(
+        'over the 10 byte limit'
+      );
+    });
+  });
 });

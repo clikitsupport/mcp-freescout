@@ -5,6 +5,8 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { z } from 'zod';
+import type { ContentBlock } from '@modelcontextprotocol/server';
+import { attachmentToContent, listConversationAttachments } from './attachments.js';
 import { resolveDraftReplyRecipients, shouldInheritDraftRecipients } from './draft-recipients.js';
 import { FreeScoutAPI } from './freescout-api.js';
 import { installStdioLifecycle, type StdioLifecycle } from './stdio-lifecycle.js';
@@ -20,10 +22,13 @@ type FreeScoutApiPort = Pick<
   FreeScoutAPI,
   | 'addThread'
   | 'createDraftReply'
+  | 'deleteDraft'
+  | 'downloadAttachment'
   | 'getConversation'
   | 'getMailboxes'
   | 'parseTicketInput'
   | 'searchConversations'
+  | 'sendDraft'
   | 'updateConversation'
 >;
 
@@ -436,6 +441,195 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
 
       return {
         content: [{ type: 'text', text: JSON.stringify(mailboxes, null, 2) }],
+      };
+    }
+  );
+
+  // Tool 9: Get Attachments
+  server.registerTool(
+    'freescout_get_attachments',
+    {
+      title: 'Get Ticket Attachments',
+      description:
+        'Download and read the files attached to a FreeScout ticket. Images (PNG, JPEG, GIF, WebP, AVIF, HEIC) are returned as viewable images, PDFs as extracted text plus the raw PDF, and text files as text. Omit attachmentIds to read every attachment on the ticket (up to limit).',
+      inputSchema: z.object({
+        ticket: z.string().describe('Ticket ID, ticket number, or FreeScout URL'),
+        attachmentIds: z
+          .array(z.number())
+          .optional()
+          .describe('Only read these attachment IDs (default: all attachments)'),
+        limit: z
+          .number()
+          .min(1)
+          .max(20)
+          .optional()
+          .default(10)
+          .describe('Maximum number of attachments to read'),
+      }),
+    },
+    async ({ ticket, attachmentIds, limit }) => {
+      const ticketId = api.parseTicketInput(ticket);
+      const conversation = await api.getConversation(ticketId, true);
+      const all = listConversationAttachments(conversation);
+      const wanted = attachmentIds ? all.filter((a) => attachmentIds.includes(a.id)) : all;
+      const selected = wanted.slice(0, limit ?? 10);
+
+      if (selected.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: attachmentIds
+                ? `No matching attachments on ticket #${ticketId}. Available IDs: ${all.map((a) => a.id).join(', ') || 'none'}`
+                : `Ticket #${ticketId} has no attachments.`,
+            },
+          ],
+        };
+      }
+
+      const content: ContentBlock[] = [
+        {
+          type: 'text',
+          text: `Ticket #${ticketId}: reading ${selected.length} of ${all.length} attachment(s).`,
+        },
+      ];
+
+      for (const attachment of selected) {
+        try {
+          if (!attachment.fileUrl) {
+            throw new Error('FreeScout did not return a download URL');
+          }
+          const data = await api.downloadAttachment(attachment.fileUrl);
+          content.push(...(await attachmentToContent(attachment, data)));
+        } catch (error) {
+          content.push({
+            type: 'text',
+            text: `Attachment ${attachment.id} (${attachment.fileName}) could not be read: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
+
+      return { content };
+    }
+  );
+
+  // Tool 10: List Drafts
+  server.registerTool(
+    'freescout_list_drafts',
+    {
+      title: 'List Draft Replies',
+      description:
+        'List the unsent reply drafts on a FreeScout ticket, newest first, with their IDs and a text preview. Use the IDs with freescout_send_draft or freescout_delete_draft.',
+      inputSchema: z.object({
+        ticket: z.string().describe('Ticket ID, ticket number, or FreeScout URL'),
+      }),
+    },
+    async ({ ticket }) => {
+      const ticketId = api.parseTicketInput(ticket);
+      const conversation = await api.getConversation(ticketId, true);
+      const drafts = (conversation._embedded?.threads ?? [])
+        .filter((t) => t.state === 'draft')
+        .sort((a, b) => b.id - a.id)
+        .map((t) => {
+          const stripped = analyzer.stripHtml(normalizeThreadBody(t.body));
+          return {
+            draftId: t.id,
+            createdAt: t.createdAt ?? t.created_at,
+            to: t.to ?? [],
+            cc: t.cc ?? [],
+            preview: stripped.substring(0, 300) + (stripped.length > 300 ? '...' : ''),
+          };
+        });
+
+      const output = { ticketId, drafts };
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
+        structuredContent: output,
+      };
+    }
+  );
+
+  // Tool 11: Send Draft
+  server.registerTool(
+    'freescout_send_draft',
+    {
+      title: 'Send Draft Reply',
+      description:
+        'Send an existing reply draft to the customer immediately, exactly as written in FreeScout. This emails the customer and cannot be undone, so only call it when the user has explicitly approved sending. Requires the McpDrafts FreeScout module.',
+      inputSchema: z.object({
+        ticket: z.string().describe('Ticket ID, ticket number, or FreeScout URL'),
+        draftId: z.number().describe('Draft thread ID (from freescout_list_drafts)'),
+        status: z
+          .enum(['active', 'pending', 'closed'])
+          .optional()
+          .describe('Optionally change the ticket status when sending'),
+        userId: z.number().optional().describe('User ID sending the reply (default: from env)'),
+      }),
+      annotations: { destructiveHint: true, openWorldHint: true },
+    },
+    async ({ ticket, draftId, status, userId }) => {
+      const ticketId = api.parseTicketInput(ticket);
+      await api.sendDraft(ticketId, draftId, userId ?? defaultUserId, status);
+
+      const output = {
+        success: true,
+        message: `Draft ${draftId} sent on ticket #${ticketId}`,
+        ticketId,
+        draftId,
+      };
+
+      return {
+        content: [{ type: 'text', text: output.message }],
+        structuredContent: output,
+      };
+    }
+  );
+
+  // Tool 12: Delete Draft
+  server.registerTool(
+    'freescout_delete_draft',
+    {
+      title: 'Delete Draft Replies',
+      description:
+        'Delete one or more unsent reply drafts from a FreeScout ticket, for example older versions left behind after edits. Sent replies cannot be deleted. Requires the McpDrafts FreeScout module.',
+      inputSchema: z.object({
+        ticket: z.string().describe('Ticket ID, ticket number, or FreeScout URL'),
+        draftIds: z
+          .array(z.number())
+          .min(1)
+          .describe('Draft thread IDs to delete (from freescout_list_drafts)'),
+        userId: z.number().optional().describe('User ID deleting the drafts (default: from env)'),
+      }),
+      annotations: { destructiveHint: true },
+    },
+    async ({ ticket, draftIds, userId }) => {
+      const ticketId = api.parseTicketInput(ticket);
+      const deleted: number[] = [];
+      const failed: { draftId: number; error: string }[] = [];
+
+      for (const draftId of draftIds) {
+        try {
+          await api.deleteDraft(ticketId, draftId, userId ?? defaultUserId);
+          deleted.push(draftId);
+        } catch (error) {
+          failed.push({
+            draftId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      const output = { success: failed.length === 0, ticketId, deleted, failed };
+      const lines = [
+        `Deleted ${deleted.length} of ${draftIds.length} draft(s) on ticket #${ticketId}.`,
+      ];
+      for (const f of failed) lines.push(`Draft ${f.draftId} not deleted: ${f.error}`);
+
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        structuredContent: output,
+        isError: deleted.length === 0,
       };
     }
   );

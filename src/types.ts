@@ -9,16 +9,32 @@ export const AttachmentSchema = z.object({
   url: z.string().optional(),
 });
 
+// Shape returned by the FreeScout API under a thread's `_embedded.attachments`
+export const ApiAttachmentSchema = z.object({
+  id: z.number(),
+  fileName: z.string(),
+  fileUrl: z.string().optional(),
+  mimeType: z.string().optional(),
+  size: z.number().optional(),
+});
+
 export const ThreadSchema = z.object({
   id: z.number(),
   type: z.enum(['customer', 'message', 'note']).optional(),
+  state: z.string().optional(),
   body: z.string().optional(),
   created_by_customer: z.boolean().optional(),
   created_at: z.string().optional(),
+  createdAt: z.string().optional(),
   to: z.array(z.string()).optional(),
   cc: z.array(z.string()).optional(),
   bcc: z.array(z.string()).optional(),
   attachments: z.array(AttachmentSchema).optional(),
+  _embedded: z
+    .object({
+      attachments: z.array(ApiAttachmentSchema).optional(),
+    })
+    .optional(),
 });
 
 export const CustomerSchema = z.object({
@@ -98,18 +114,12 @@ export const SearchFiltersSchema = z.object({
     .string()
     .optional()
     .describe('Alias for `subject`: matches the conversation subject only, not message bodies.'),
-  subject: z
-    .string()
-    .optional()
-    .describe('Filter by conversation subject (partial match).'),
+  subject: z.string().optional().describe('Filter by conversation subject (partial match).'),
   customerEmail: z
     .string()
     .optional()
     .describe('Filter by the customer email address on the conversation.'),
-  number: z
-    .number()
-    .optional()
-    .describe('Look up a single conversation by its ticket number.'),
+  number: z.number().optional().describe('Look up a single conversation by its ticket number.'),
   assignee: z.union([z.literal('unassigned'), z.literal('any'), z.number()]).optional(),
   updatedSince: z.string().optional(), // ISO date or relative like "7d", "24h"
   createdSince: z.string().optional(),
